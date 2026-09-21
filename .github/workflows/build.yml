@@ -1,0 +1,451 @@
+name: Build APK
+
+# Everything the app needs is written out by this one file, so the repo only has to hold
+# this workflow and DMC900H_VX1005_reference.html.
+# Updating the reference HTML does NOT trigger a build: the installed app fetches it by itself.
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Check the signing secrets are set
+        env:
+          KEY: ${{ secrets.SIGNING_KEY }}
+          PASS: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          if [ -z "$KEY" ] || [ -z "$PASS" ]; then
+            echo "::error::Add SIGNING_KEY and SIGNING_PASSWORD under Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+          echo "$KEY" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Write the Android project
+        run: |
+          cat > settings.gradle <<'EOF_SRC'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'dmc900h-reference'
+          include ':app'
+          EOF_SRC
+          cat > build.gradle <<'EOF_SRC'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_SRC
+          cat > gradle.properties <<'EOF_SRC'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
+          EOF_SRC
+          mkdir -p app
+          cat > app/build.gradle <<'EOF_SRC'
+          plugins {
+              id 'com.android.application'
+          }
+
+          // Supplied by the GitHub workflow. Local builds fall back to harmless defaults.
+          def vCode     = (System.getenv('VERSION_CODE') ?: '1').toInteger()
+          def updateUrl = System.getenv('UPDATE_URL') ?: ''
+          def storePath = System.getenv('SIGNING_STORE')
+          def storePass = System.getenv('SIGNING_PASSWORD')
+
+          android {
+              namespace 'com.austin.dmc900h'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'com.austin.dmc900h'
+                  minSdk 26
+                  targetSdk 34
+                  versionCode vCode
+                  versionName "1.${vCode}"
+                  buildConfigField 'String', 'UPDATE_URL', "\"${updateUrl}\""
+              }
+
+              buildFeatures { buildConfig true }
+
+              signingConfigs {
+                  release {
+                      if (storePath) {
+                          storeFile file(storePath)
+                          storePassword storePass
+                          keyAlias 'reference'
+                          keyPassword storePass
+                      }
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      signingConfig storePath ? signingConfigs.release : signingConfigs.debug
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              lint { abortOnError false; checkReleaseBuilds false }
+          }
+          EOF_SRC
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_SRC'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <application
+                  android:label="DMC-900H"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:theme="@style/AppTheme"
+                  android:allowBackup="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_SRC
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/themes.xml <<'EOF_SRC'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ground">#F2F0EC</color>
+              <color name="icon_bg">#1A1E22</color>
+              <style name="AppTheme" parent="android:Theme.DeviceDefault.Light.NoActionBar">
+                  <item name="android:windowBackground">@color/ground</item>
+              </style>
+          </resources>
+          EOF_SRC
+          mkdir -p app/src/main/res/values-night
+          cat > app/src/main/res/values-night/themes.xml <<'EOF_SRC'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ground">#121518</color>
+              <style name="AppTheme" parent="android:Theme.DeviceDefault.NoActionBar">
+                  <item name="android:windowBackground">@color/ground</item>
+              </style>
+          </resources>
+          EOF_SRC
+          mkdir -p app/src/main/res/mipmap
+          cat > app/src/main/res/mipmap/ic_launcher.xml <<'EOF_SRC'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/icon_bg" />
+              <foreground android:drawable="@drawable/ic_launcher_fg" />
+          </adaptive-icon>
+          EOF_SRC
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/ic_launcher_fg.xml <<'EOF_SRC'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <!-- shank -->
+              <path android:fillColor="#FFFFFF" android:pathData="M47,24 h14 v24 h-14 z" />
+              <!-- neck -->
+              <path android:fillColor="#FFFFFF" android:fillAlpha="0.75" android:pathData="M46,49 h16 v3 h-16 z" />
+              <!-- fluted body -->
+              <path android:fillColor="#FFFFFF" android:pathData="M45,53 h18 v26 l-3,4 h-12 l-3,-4 z" />
+              <!-- helix gaps -->
+              <path android:fillColor="#1A1E22" android:pathData="M45,58 l18,-4 v3 l-18,4 z" />
+              <path android:fillColor="#1A1E22" android:pathData="M45,66 l18,-4 v3 l-18,4 z" />
+              <path android:fillColor="#1A1E22" android:pathData="M45,74 l18,-4 v3 l-18,4 z" />
+              <!-- accent ring on the shank -->
+              <path android:fillColor="#E0A040" android:pathData="M47,40 h14 v3 h-14 z" />
+          </vector>
+          EOF_SRC
+          mkdir -p app/src/main/java/com/austin/dmc900h
+          cat > app/src/main/java/com/austin/dmc900h/MainActivity.java <<'EOF_SRC'
+          package com.austin.dmc900h;
+
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.ActivityNotFoundException;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          import java.io.File;
+          import java.io.FileInputStream;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.io.RandomAccessFile;
+          import java.net.HttpURLConnection;
+          import java.net.URL;
+          import java.nio.charset.StandardCharsets;
+          import java.security.MessageDigest;
+          import java.util.Arrays;
+
+          /**
+           * Full-screen WebView over the DMC-900H reference.
+           *
+           * The APK carries the reference as it stood when the app was built. On launch (and when brought
+           * back after 10 minutes) it asks GitHub whether the file in the repo has changed, using the ETag so
+           * an unchanged file costs one tiny request. A changed file is downloaded, checked for completeness,
+           * and kept in app storage; from then on that copy is what opens. No connection = last good copy.
+           */
+          public class MainActivity extends Activity {
+
+              private static final String ASSET_URL = "file:///android_asset/reference.html";
+              private static final String ASSET_NAME = "reference.html";
+              private static final String CACHE_NAME = "reference.html";
+              private static final long RECHECK_MS = 10 * 60 * 1000L;
+
+              private WebView web;
+              private SharedPreferences prefs;
+              private final Handler ui = new Handler(Looper.getMainLooper());
+              private volatile boolean checking = false;
+              private long lastCheck = 0;
+              private boolean clearOnLoad = false;
+
+              @Override
+              protected void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  prefs = getSharedPreferences("update", MODE_PRIVATE);
+                  dropCacheIfAppChanged();
+
+                  web = new WebView(this);
+                  setContentView(web);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);          // the page remembers the ladder view mode
+                  s.setAllowFileAccess(true);            // needed to open the downloaded copy
+                  s.setSupportZoom(true);
+                  s.setBuiltInZoomControls(true);        // pinch zoom on drawings and schematics
+                  s.setDisplayZoomControls(false);
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
+                          Uri u = req.getUrl();
+                          String scheme = u.getScheme();
+                          if ("file".equals(scheme)) return false;          // stays inside the reference
+                          try {
+                              startActivity(new Intent(Intent.ACTION_VIEW, u)); // web links open in the browser
+                          } catch (ActivityNotFoundException ignored) { }
+                          return true;
+                      }
+
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          if (clearOnLoad) { clearOnLoad = false; view.clearHistory(); } // no back into the old copy
+                      }
+                  });
+
+                  if (state == null || web.restoreState(state) == null) {
+                      web.loadUrl(currentUrl());
+                  }
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  web.onResume();
+                  if (System.currentTimeMillis() - lastCheck > RECHECK_MS) checkForUpdate();
+              }
+
+              @Override
+              protected void onPause() {
+                  web.onPause();
+                  super.onPause();
+              }
+
+              @Override
+              protected void onSaveInstanceState(Bundle out) {
+                  super.onSaveInstanceState(out);
+                  web.saveState(out);
+              }
+
+              @Override
+              @SuppressWarnings("deprecation")
+              public void onBackPressed() {
+                  if (web.canGoBack()) web.goBack();   // back steps through the topics you visited
+                  else super.onBackPressed();
+              }
+
+              // ------------------------------------------------------------------ files
+
+              private File cacheFile() {
+                  return new File(getFilesDir(), CACHE_NAME);
+              }
+
+              private String currentUrl() {
+                  File f = cacheFile();
+                  return f.exists() ? Uri.fromFile(f).toString() : ASSET_URL;
+              }
+
+              /** A new APK carries a newer bundled copy, so forget anything downloaded by the old one. */
+              private void dropCacheIfAppChanged() {
+                  int installed = BuildConfig.VERSION_CODE;
+                  if (prefs.getInt("appVersion", -1) != installed) {
+                      //noinspection ResultOfMethodCallIgnored
+                      cacheFile().delete();
+                      prefs.edit().remove("etag").putInt("appVersion", installed).apply();
+                  }
+              }
+
+              private byte[] hashOfCurrent() throws Exception {
+                  File f = cacheFile();
+                  try (InputStream in = f.exists() ? new FileInputStream(f) : getAssets().open(ASSET_NAME)) {
+                      return sha256(in);
+                  }
+              }
+
+              private static byte[] sha256(InputStream in) throws Exception {
+                  MessageDigest md = MessageDigest.getInstance("SHA-256");
+                  byte[] b = new byte[65536];
+                  int n;
+                  while ((n = in.read(b)) > 0) md.update(b, 0, n);
+                  return md.digest();
+              }
+
+              /** Guards against a half-downloaded file: it must be a sensible size and end with </html>. */
+              private static boolean looksComplete(File f) {
+                  long len = f.length();
+                  if (len < 100_000) return false;
+                  try (RandomAccessFile r = new RandomAccessFile(f, "r")) {
+                      int tail = (int) Math.min(4096, len);
+                      byte[] b = new byte[tail];
+                      r.seek(len - tail);
+                      r.readFully(b);
+                      return new String(b, StandardCharsets.UTF_8).toLowerCase().contains("</html>");
+                  } catch (Exception e) {
+                      return false;
+                  }
+              }
+
+              // ------------------------------------------------------------------ update
+
+              private void checkForUpdate() {
+                  final String url = BuildConfig.UPDATE_URL;
+                  if (url == null || url.isEmpty() || checking) return;
+                  checking = true;
+                  lastCheck = System.currentTimeMillis();
+                  new Thread(() -> {
+                      File tmp = new File(getFilesDir(), CACHE_NAME + ".part");
+                      HttpURLConnection c = null;
+                      try {
+                          c = (HttpURLConnection) new URL(url).openConnection();
+                          c.setConnectTimeout(8000);
+                          c.setReadTimeout(60000);
+                          c.setUseCaches(false);
+                          String etag = prefs.getString("etag", null);
+                          if (etag != null) c.setRequestProperty("If-None-Match", etag);
+
+                          if (c.getResponseCode() != HttpURLConnection.HTTP_OK) return; // 304 = unchanged
+
+                          MessageDigest md = MessageDigest.getInstance("SHA-256");
+                          try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(tmp)) {
+                              byte[] b = new byte[65536];
+                              int n;
+                              while ((n = in.read(b)) > 0) {
+                                  out.write(b, 0, n);
+                                  md.update(b, 0, n);
+                              }
+                          }
+                          String newEtag = c.getHeaderField("ETag");
+
+                          if (!looksComplete(tmp)) return;
+
+                          if (Arrays.equals(md.digest(), hashOfCurrent())) {   // same as what we already show
+                              if (newEtag != null) prefs.edit().putString("etag", newEtag).apply();
+                              return;
+                          }
+                          if (!tmp.renameTo(cacheFile())) return;
+                          if (newEtag != null) prefs.edit().putString("etag", newEtag).apply();
+                          ui.post(this::offerReload);
+                      } catch (Exception ignored) {
+                          // offline or GitHub unreachable: keep using the copy we have
+                      } finally {
+                          if (c != null) c.disconnect();
+                          //noinspection ResultOfMethodCallIgnored
+                          tmp.delete();
+                          checking = false;
+                      }
+                  }).start();
+              }
+
+              private void offerReload() {
+                  if (isFinishing() || isDestroyed()) return;
+                  new AlertDialog.Builder(this)
+                          .setTitle("Reference updated")
+                          .setMessage("A newer version of the reference has been downloaded.")
+                          .setPositiveButton("Reload now", (d, w) -> {
+                              String frag = null;
+                              String now = web.getUrl();
+                              if (now != null) frag = Uri.parse(now).getFragment();
+                              clearOnLoad = true;
+                              web.loadUrl(currentUrl() + (frag != null && !frag.isEmpty() ? "#" + frag : ""));
+                          })
+                          .setNegativeButton("Later", null)   // it opens next time the app starts
+                          .show();
+              }
+          }
+          EOF_SRC
+
+      - name: Bundle the current reference into the app
+        run: |
+          test -f DMC900H_VX1005_reference.html || { echo "::error::Upload DMC900H_VX1005_reference.html to the repo first"; exit 1; }
+          mkdir -p app/src/main/assets
+          cp DMC900H_VX1005_reference.html app/src/main/assets/reference.html
+
+      - name: Build
+        env:
+          SIGNING_STORE: ${{ runner.temp }}/release.jks
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+          VERSION_CODE: ${{ github.run_number }}
+          UPDATE_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/DMC900H_VX1005_reference.html
+        run: gradle --no-daemon assembleRelease
+
+      - name: Publish as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk DMC900H-reference.apk
+          gh release create "v${{ github.run_number }}" DMC900H-reference.apk \
+            --title "DMC-900H Reference, build ${{ github.run_number }}" \
+            --notes "Install on the phone. Later changes to the reference HTML reach the app by themselves." \
+            --latest
